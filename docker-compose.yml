@@ -1,0 +1,161 @@
+version: "3.7"
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    container_name: caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/etc-caddy:/etc/caddy
+      - ./caddy/data:/data # Optional
+      - ./caddy/config:/config # Optional
+      - ./caddy/logs:/logs
+      - mastodon-public:/srv/mastodon/public:ro
+    env_file: .env
+    # helps crossposter resolve the mastodon server internally
+    hostname: "${MASTODON_DOMAIN}"
+    networks:
+       frontend: 
+          aliases:
+            - "${MASTODON_DOMAIN}"
+    networks:
+      - frontend
+      - backend
+
+  mastodon-db:
+    restart: unless-stopped
+    image: postgres:14-alpine
+    container_name: "mastodon-db"
+    healthcheck:
+      test: pg_isready -U postgres
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - "./mastodon/postgres:/var/lib/postgresql/data"
+    networks:
+      - backend
+
+  mastodon-redis:
+    restart: unless-stopped
+    image: redis:6.0-alpine
+    container_name: "mastodon-redis"
+    healthcheck:
+      test: redis-cli ping
+    volumes:
+      - ./mastodon/redis:/data
+    networks:
+      - backend
+
+#  mastodon-elastic:
+#    restart: unless-stopped
+#    image: docker.elastic.co/elasticsearch/elasticsearch-oss:7.10.2
+#    container_name: "mastodon-elastic"
+#    healthcheck:
+#      test: curl --silent --fail localhost:9200/_cluster/health || exit 1
+#    environment:
+#      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+#      cluster.name: es-mastodon
+#      discovery.type: single-node
+#      bootstrap.memory_lock: "true"
+#    volumes:
+#      - ./mastodon/elasticsearch:/usr/share/elasticsearch/data
+#    networks:
+#      - backend
+#    ulimits:
+#      memlock:
+#        soft: -1
+#       hard: -1
+
+  mastodon-web:
+    restart: always
+    image: "tootsuite/mastodon:${MASTODON_VERSION}"
+    container_name: "mastodon-web"
+    healthcheck:
+      test: wget -q --spider --proxy=off localhost:3000/health || exit 1
+    env_file: mastodon.env.production
+    environment:
+      LOCAL_DOMAIN: "${MASTODON_DOMAIN}"
+      SMTP_FROM_ADDRESS: "notifications@${MASTODON_DOMAIN}"
+      DISABLE_DATABASE_ENVIRONMENT_CHECK: 1
+#      ES_HOST: mastodon-elastic
+#      ES_ENABLED: true
+    command: bash -c "rm -f /mastodon/tmp/pids/server.pid; bundle exec rails s -p 3000"
+    expose:
+      - "3000"
+    depends_on:
+      - mastodon-db
+      - mastodon-redis
+ #     - mastodon-elastic
+    volumes:
+      # https://www.digitalocean.com/community/tutorials/how-to-share-data-between-docker-containers
+      - mastodon-public:/opt/mastodon/public # map static files in volume for caddy
+      - ./mastodon/public/system:/opt/mastodon/public/system
+    networks:
+      - frontend
+      - backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  mastodon-streaming:
+    restart: always
+    image: "tootsuite/mastodon:${MASTODON_VERSION}"
+    container_name: "mastodon-streaming"
+    healthcheck:
+      test: wget -q --spider --proxy=off localhost:4000/api/v1/streaming/health || exit 1
+        ]
+    env_file: mastodon.env.production
+    environment:
+      LOCAL_DOMAIN: "${MASTODON_DOMAIN}"
+      SMTP_FROM_ADDRESS: "notifications@${MASTODON_DOMAIN}"
+      DISABLE_DATABASE_ENVIRONMENT_CHECK: 1
+  #    ES_HOST: mastodon-elastic
+  #    ES_ENABLED: true
+    command: node ./streaming
+    expose:
+      - "4000"
+    depends_on:
+      - mastodon-db
+      - mastodon-redis
+    networks:
+      - frontend
+      - backend
+
+  mastodon-sidekiq:
+    restart: always
+    image: "tootsuite/mastodon:${MASTODON_VERSION}"
+    container_name: "mastodon-sidekiq"
+    healthcheck:
+      test: ps aux | grep '[s]idekiq\ 6' || false
+    env_file: mastodon.env.production
+    environment:
+      LOCAL_DOMAIN: "${MASTODON_DOMAIN}"
+      SMTP_FROM_ADDRESS: "notifications@${MASTODON_DOMAIN}"
+   #   ES_HOST: mastodon-elastic
+   #   ES_ENABLED: true
+    command: bundle exec sidekiq
+    depends_on:
+      - mastodon-db
+      - mastodon-redis
+    volumes:
+      - ./mastodon/public/system:/mastodon/public/system
+    networks:
+      - frontend
+      - backend
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  mastodon-public:
+
+networks:
+  frontend:
+    name: "${COMPOSE_PROJECT_NAME}_frontend"
+    ipam:
+      config:
+        - subnet: "${FRONTEND_SUBNET}"
+  backend:
+    name: "${COMPOSE_PROJECT_NAME}_backend"
+    internal: true
