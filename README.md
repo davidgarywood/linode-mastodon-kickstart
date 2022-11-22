@@ -1,6 +1,6 @@
 # Linode - Mastodon - Kickstart
 
-This repo containss work instructions for setting up Mastodon via Docker with Caddy for 
+This repo contains work instructions for setting up Mastodon via Docker with Caddy for 
 Letsencrypt and http proxying.
 
 It's intended as a quick start guide, and not a thorough guide. It assumes some 
